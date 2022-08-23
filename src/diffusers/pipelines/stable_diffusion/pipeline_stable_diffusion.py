@@ -1,6 +1,7 @@
 import inspect
 import warnings
 import random
+import sys
 from typing import List, Optional, Union
 
 import torch
@@ -165,7 +166,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
 
         return {"sample": image, "nsfw_content_detected": has_nsfw_concept}
 
-    def get_text_latent_space(self, prompt, guidance_scale):
+    def get_text_latent_space(self, prompt, guidance_scale = 7.5):
 
         # get prompt text embeddings
         text_input = self.tokenizer(
@@ -200,7 +201,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
         first_embedding = self.get_text_latent_space(first_prompt)
         second_embedding = self.get_text_latent_space(second_prompt)
         if not seed:
-            seed = random.randint()
+            seed = random.randint(0, sys.maxsize)
         generator = torch.Generator("cuda")
         lerp_embed_points = []
         for i in range(length):
@@ -216,7 +217,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
                 image.save(f"{first_prompt}-{second_prompt}-{idx:02d}")
         return images
 
-
+    @torch.no_grad()
     def image_from_latent_space(self, text_embeddings, 
         height: Optional[int] = 512,
         width: Optional[int] = 512,
