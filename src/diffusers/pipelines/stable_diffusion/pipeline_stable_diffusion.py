@@ -165,7 +165,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
 
         return {"sample": image, "nsfw_content_detected": has_nsfw_concept}
 
-    def get_text_latent_space(self, prompt):
+    def get_text_latent_space(self, prompt, guidance_scale):
 
         # get prompt text embeddings
         text_input = self.tokenizer(
@@ -176,9 +176,27 @@ class StableDiffusionPipeline(DiffusionPipeline):
             return_tensors="pt",
         )
         text_embeddings = self.text_encoder(text_input.input_ids.to(self.device))[0]
+        
+        # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
+        # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
+        # corresponds to doing no classifier free guidance.
+        do_classifier_free_guidance = guidance_scale > 1.0
+        # get unconditional embeddings for classifier free guidance
+        if do_classifier_free_guidance:
+            max_length = text_input.input_ids.shape[-1]
+            uncond_input = self.tokenizer(
+                [""], padding="max_length", max_length=max_length, return_tensors="pt"
+            )
+            uncond_embeddings = self.text_encoder(uncond_input.input_ids.to(self.device))[0]
+
+            # For classifier free guidance, we need to do two forward passes.
+            # Here we concatenate the unconditional and text embeddings into a single batch
+            # to avoid doing two forward passes
+            text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+
         return text_embeddings
     
-    def lerp_between_prompts(self, first_prompt, second_prompt, seed = None, length = 10, save=False, **kwargs):
+    def lerp_between_prompts(self, first_prompt, second_prompt, seed = None, length = 10, save=False, guidance_scale: Optional[float] = 7.5, **kwargs):
         first_embedding = self.get_text_latent_space(first_prompt)
         second_embedding = self.get_text_latent_space(second_prompt)
         if not seed:
@@ -209,23 +227,12 @@ class StableDiffusionPipeline(DiffusionPipeline):
         output_type: Optional[str] = "pil",
         **kwargs,):
 
+        batch_size = 1
+        
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
-        # get unconditional embeddings for classifier free guidance
-        if do_classifier_free_guidance:
-            max_length = text_input.input_ids.shape[-1]
-            uncond_input = self.tokenizer(
-                [""] * batch_size, padding="max_length", max_length=max_length, return_tensors="pt"
-            )
-            uncond_embeddings = self.text_encoder(uncond_input.input_ids.to(self.device))[0]
-
-            # For classifier free guidance, we need to do two forward passes.
-            # Here we concatenate the unconditional and text embeddings into a single batch
-            # to avoid doing two forward passes
-            text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
-
         # get the intial random noise
         latents = torch.randn(
             (batch_size, self.unet.in_channels, height // 8, width // 8),
