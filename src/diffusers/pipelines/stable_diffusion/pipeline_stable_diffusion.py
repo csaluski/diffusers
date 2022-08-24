@@ -209,15 +209,15 @@ class StableDiffusionPipeline(DiffusionPipeline):
         for i in range(length):
             weight = i / length
             tensor_lerp = torch.lerp(first_embedding, second_embedding, weight)
-            lerp_embed_points.extend(tensor_lerp)
+            lerp_embed_points.append(tensor_lerp)
         images = []
         for idx, latent_point in enumerate(lerp_embed_points):
             generator.set_state(generator_state)
             image = self.image_from_latent_space(latent_point, **kwargs)["image"][0]
-            images.extend(image)
+            images.append(image)
             if save:
                 image.save(f"{first_prompt}-{second_prompt}-{idx:02d}")
-        return {"images": images, "generator_state": generator_state}
+        return {"images": images, "latent_points": lerp_embed_points,"generator_state": generator_state}
 
     @torch.no_grad()
     def image_from_latent_space(self, text_embeddings, 
@@ -309,4 +309,6 @@ class StableDiffusionPipeline(DiffusionPipeline):
         
         generator = torch.Generator("cuda")
         generator.set_state(generator_state)
-        return self.image_from_latent_space(variation_embedding, generator=generator, **kwargs)
+        result = self.image_from_latent_space(variation_embedding, generator=generator, **kwargs)
+        result.update({"latent_point": variation_embedding})
+        return result
