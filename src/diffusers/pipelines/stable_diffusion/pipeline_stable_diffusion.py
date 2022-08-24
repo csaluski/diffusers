@@ -302,7 +302,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
 
     def variation(self, text_embeddings, generator_state, variation_magnitude = 100, **kwargs):
         # random vector to move in latent space
-        rand_t = (torch.rand(text_embeddings.shape) * 2) - 1
+        rand_t = (torch.rand(text_embeddings.shape, device = self.device) * 2) - 1
         rand_mag = torch.sum(torch.abs(rand_t)) / variation_magnitude
         scaled_rand_t = rand_t / rand_mag
         variation_embedding = text_embeddings + scaled_rand_t
