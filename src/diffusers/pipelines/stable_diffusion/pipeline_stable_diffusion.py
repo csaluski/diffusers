@@ -203,6 +203,8 @@ class StableDiffusionPipeline(DiffusionPipeline):
         if not seed:
             seed = random.randint(0, sys.maxsize)
         generator = torch.Generator("cuda")
+        generator.manual_seed(seed)
+        generator_state = generator.get_state()
         lerp_embed_points = []
         for i in range(length):
             weight = i / length
@@ -210,12 +212,12 @@ class StableDiffusionPipeline(DiffusionPipeline):
             lerp_embed_points.extend(tensor_lerp)
         images = []
         for idx, latent_point in enumerate(lerp_embed_points):
-            generator.manual_seed(seed)
-            image = self.image_from_latent_space(latent_point, **kwargs)
+            generator.set_state(generator_state)
+            image = self.image_from_latent_space(latent_point, **kwargs)["image"][0]
             images.extend(image)
             if save:
                 image.save(f"{first_prompt}-{second_prompt}-{idx:02d}")
-        return images
+        return {"images": images, "generator_state": generator_state}
 
     @torch.no_grad()
     def image_from_latent_space(self, text_embeddings, 
@@ -230,6 +232,9 @@ class StableDiffusionPipeline(DiffusionPipeline):
 
         batch_size = 1
         
+        if generator == None:
+            generator = torch.Generator("cuda")
+        generator_state = generator.get_state()
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
@@ -293,5 +298,15 @@ class StableDiffusionPipeline(DiffusionPipeline):
         if output_type == "pil":
             image = self.numpy_to_pil(image)
 
-        return image
+        return {"image": image, "generator_state": generator_state}
 
+    def variation(self, text_embeddings, generator_state, variation_magnitude = 100, **kwargs):
+        # random vector to move in latent space
+        rand_t = (torch.rand(text_embeddings.shape) * 2) - 1
+        rand_mag = torch.sum(torch.abs(rand_t)) / variation_magnitude
+        scaled_rand_t = rand_t / rand_mag
+        variation_embedding = text_embeddings + scaled_rand_t
+        
+        generator = torch.Generator("cuda")
+        generator.set_state(generator_state)
+        return self.image_from_latent_space(variation_embedding, generator=generator, **kwargs)
