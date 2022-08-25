@@ -306,7 +306,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
         # get the intial random noise
-        latents = init if init else torch.randn(
+        latents = init if init is not None else torch.randn(
             (batch_size, self.unet.in_channels, height // 8, width // 8),
             generator=generator,
             device=self.device,)
