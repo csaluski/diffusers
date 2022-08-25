@@ -5,6 +5,7 @@ import sys
 from typing import List, Optional, Union
 
 import torch
+import numpy as np
 
 from tqdm.auto import tqdm
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
@@ -197,12 +198,40 @@ class StableDiffusionPipeline(DiffusionPipeline):
 
         return text_embeddings
     
+    def slerp(t, v0, v1, DOT_THRESHOLD=0.9995):
+        """ helper function to spherically interpolate two arrays v1 v2 
+        from https://gist.github.com/karpathy/00103b0037c5aaea32fe1da1af553355 
+        this should be better than lerping for moving between noise spaces """
+
+        if not isinstance(v0, np.ndarray):
+            inputs_are_torch = True
+            input_device = v0.device
+            v0 = v0.cpu().numpy()
+            v1 = v1.cpu().numpy()
+
+        dot = np.sum(v0 * v1 / (np.linalg.norm(v0) * np.linalg.norm(v1)))
+        if np.abs(dot) > DOT_THRESHOLD:
+            v2 = (1 - t) * v0 + t * v1
+        else:
+            theta_0 = np.arccos(dot)
+            sin_theta_0 = np.sin(theta_0)
+            theta_t = theta_0 * t
+            sin_theta_t = np.sin(theta_t)
+            s0 = np.sin(theta_0 - theta_t) / sin_theta_0
+            s1 = sin_theta_t / sin_theta_0
+            v2 = s0 * v0 + s1 * v1
+
+        if inputs_are_torch:
+            v2 = torch.from_numpy(v2).to(input_device)
+
+        return v2
+
     def lerp_between_prompts(self, first_prompt, second_prompt, seed = None, length = 10, save=False, guidance_scale: Optional[float] = 7.5, **kwargs):
         first_embedding = self.get_text_latent_space(first_prompt)
         second_embedding = self.get_text_latent_space(second_prompt)
         if not seed:
             seed = random.randint(0, sys.maxsize)
-        generator = torch.Generator("cuda")
+        generator = torch.Generator(self.device)
         generator.manual_seed(seed)
         generator_state = generator.get_state()
         lerp_embed_points = []
@@ -213,14 +242,51 @@ class StableDiffusionPipeline(DiffusionPipeline):
         images = []
         for idx, latent_point in enumerate(lerp_embed_points):
             generator.set_state(generator_state)
-            image = self.image_from_latent_space(latent_point, **kwargs)["image"][0]
+            image = self.diffuse_from_inits(latent_point, **kwargs)["image"][0]
             images.append(image)
             if save:
                 image.save(f"{first_prompt}-{second_prompt}-{idx:02d}")
         return {"images": images, "latent_points": lerp_embed_points,"generator_state": generator_state}
 
+    def slerp_through_seeds(self,
+        prompt,
+        height: Optional[int] = 512,
+        width: Optional[int] = 512,
+        save = False,
+        seed = None, steps = 10, **kwargs):
+
+        if not seed:
+            seed = random.randint(0, sys.maxsize)
+        generator = torch.Generator(self.device)
+        generator.manual_seed(seed)
+        init_start = torch.randn(
+            (1, self.unet.in_channels, height // 8, width // 8), 
+            generator = generator, device = self.device)
+        init_end = torch.randn(
+            (1, self.unet.in_channels, height // 8, width // 8), 
+            generator = generator, device = self.device)
+        generator_state = generator.get_state()
+        slerp_embed_points = []
+        # weight from 0 to 1/(steps - 1), add init_end specifically so that we 
+        # have len(images) = steps
+        for i in range(steps - 1):
+            weight = i / steps
+            tensor_slerp = self.slerp(weight, init_start, init_end)
+            slerp_embed_points.append(tensor_slerp)
+        slerp_embed_points.append(init_end)
+        images = []
+        embed_point = self.get_text_latent_space(prompt, **kwargs)
+        for idx, noise_point in enumerate(slerp_embed_points):
+            generator.set_state(generator_state)
+            image = self.diffuse_from_inits(embed_point, init = noise_point, **kwargs)["image"][0]
+            images.append(image)
+            if save:
+                image.save(f"{seed}-{idx:02d}")
+        return {"images": images, "noise_samples": slerp_embed_points,"generator_state": generator_state}
+
     @torch.no_grad()
-    def image_from_latent_space(self, text_embeddings, 
+    def diffuse_from_inits(self, text_embeddings, 
+        init = None,
         height: Optional[int] = 512,
         width: Optional[int] = 512,
         num_inference_steps: Optional[int] = 50,
@@ -240,11 +306,10 @@ class StableDiffusionPipeline(DiffusionPipeline):
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
         # get the intial random noise
-        latents = torch.randn(
+        latents = init if init else torch.randn(
             (batch_size, self.unet.in_channels, height // 8, width // 8),
             generator=generator,
-            device=self.device,
-        )
+            device=self.device,)
 
         # set timesteps
         accepts_offset = "offset" in set(inspect.signature(self.scheduler.set_timesteps).parameters.keys())
@@ -309,6 +374,6 @@ class StableDiffusionPipeline(DiffusionPipeline):
         
         generator = torch.Generator("cuda")
         generator.set_state(generator_state)
-        result = self.image_from_latent_space(variation_embedding, generator=generator, **kwargs)
+        result = self.diffuse_from_inits(variation_embedding, generator=generator, **kwargs)
         result.update({"latent_point": variation_embedding})
         return result
