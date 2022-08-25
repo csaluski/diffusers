@@ -198,7 +198,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
 
         return text_embeddings
     
-    def slerp(t, v0, v1, DOT_THRESHOLD=0.9995):
+    def slerp(self, t, v0, v1, DOT_THRESHOLD=0.9995):
         """ helper function to spherically interpolate two arrays v1 v2 
         from https://gist.github.com/karpathy/00103b0037c5aaea32fe1da1af553355 
         this should be better than lerping for moving between noise spaces """
