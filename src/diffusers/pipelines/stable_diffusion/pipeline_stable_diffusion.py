@@ -252,7 +252,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
             image = self.diffuse_from_inits(latent_point, **kwargs)["image"][0]
             images.append(image)
             if save:
-                image.save(f"{first_prompt}-{second_prompt}-{idx:02d}")
+                image.save(f"{first_prompt}-{second_prompt}-{idx:02d}.png", "PNG")
         return {"images": images, "latent_points": lerp_embed_points,"generator_state": generator_state}
 
     def slerp_through_seeds(self,
@@ -288,7 +288,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
             image = self.diffuse_from_inits(embed_point, init = noise_point, **kwargs)["image"][0]
             images.append(image)
             if save:
-                image.save(f"{seed}-{idx:02d}")
+                image.save(f"{seed}-{idx:02d}.png", "PNG")
         return {"images": images, "noise_samples": slerp_embed_points,"generator_state": generator_state}
 
     @torch.no_grad()
