@@ -282,7 +282,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
             slerp_embed_points.append(tensor_slerp)
         slerp_embed_points.append(init_end)
         images = []
-        embed_point = self.get_text_latent_space(prompt, **kwargs)
+        embed_point = self.get_text_latent_space(prompt)
         for idx, noise_point in enumerate(slerp_embed_points):
             generator.set_state(generator_state)
             image = self.diffuse_from_inits(embed_point, init = noise_point, **kwargs)["image"][0]
