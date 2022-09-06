@@ -1,19 +1,33 @@
 #!/usr/bin/env python3
 import warnings
+from typing import Optional, Tuple, Union
 
 import torch
 
-from diffusers import DiffusionPipeline
-from tqdm.auto import tqdm
+from ...models import UNet2DModel
+from ...pipeline_utils import DiffusionPipeline, ImagePipelineOutput
+from ...schedulers import ScoreSdeVeScheduler
 
 
 class ScoreSdeVePipeline(DiffusionPipeline):
-    def __init__(self, unet, scheduler):
+
+    unet: UNet2DModel
+    scheduler: ScoreSdeVeScheduler
+
+    def __init__(self, unet: UNet2DModel, scheduler: DiffusionPipeline):
         super().__init__()
         self.register_modules(unet=unet, scheduler=scheduler)
 
     @torch.no_grad()
-    def __call__(self, batch_size=1, num_inference_steps=2000, generator=None, output_type="pil", **kwargs):
+    def __call__(
+        self,
+        batch_size: int = 1,
+        num_inference_steps: int = 2000,
+        generator: Optional[torch.Generator] = None,
+        output_type: Optional[str] = "pil",
+        return_dict: bool = True,
+        **kwargs,
+    ) -> Union[ImagePipelineOutput, Tuple]:
         if "torch_device" in kwargs:
             device = kwargs.pop("torch_device")
             warnings.warn(
@@ -31,29 +45,32 @@ class ScoreSdeVePipeline(DiffusionPipeline):
 
         model = self.unet
 
-        sample = torch.randn(*shape) * self.scheduler.config.sigma_max
+        sample = torch.randn(*shape, generator=generator) * self.scheduler.config.sigma_max
         sample = sample.to(self.device)
 
         self.scheduler.set_timesteps(num_inference_steps)
         self.scheduler.set_sigmas(num_inference_steps)
 
-        for i, t in tqdm(enumerate(self.scheduler.timesteps)):
+        for i, t in enumerate(self.progress_bar(self.scheduler.timesteps)):
             sigma_t = self.scheduler.sigmas[i] * torch.ones(shape[0], device=self.device)
 
             # correction step
             for _ in range(self.scheduler.correct_steps):
-                model_output = self.unet(sample, sigma_t)["sample"]
-                sample = self.scheduler.step_correct(model_output, sample)["prev_sample"]
+                model_output = self.unet(sample, sigma_t).sample
+                sample = self.scheduler.step_correct(model_output, sample, generator=generator).prev_sample
 
             # prediction step
-            model_output = model(sample, sigma_t)["sample"]
-            output = self.scheduler.step_pred(model_output, t, sample)
+            model_output = model(sample, sigma_t).sample
+            output = self.scheduler.step_pred(model_output, t, sample, generator=generator)
 
-            sample, sample_mean = output["prev_sample"], output["prev_sample_mean"]
+            sample, sample_mean = output.prev_sample, output.prev_sample_mean
 
         sample = sample_mean.clamp(0, 1)
         sample = sample.cpu().permute(0, 2, 3, 1).numpy()
         if output_type == "pil":
             sample = self.numpy_to_pil(sample)
 
-        return {"sample": sample}
+        if not return_dict:
+            return (sample,)
+
+        return ImagePipelineOutput(images=sample)

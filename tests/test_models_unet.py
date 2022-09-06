@@ -24,6 +24,9 @@ from diffusers.testing_utils import floats_tensor, torch_device
 from .test_modeling_common import ModelTesterMixin
 
 
+torch.backends.cuda.matmul.allow_tf32 = False
+
+
 class UnetModelTests(ModelTesterMixin, unittest.TestCase):
     model_class = UNet2DModel
 
@@ -74,7 +77,7 @@ class UnetModelTests(ModelTesterMixin, unittest.TestCase):
 #        time_step = torch.tensor([10])
 #
 #        with torch.no_grad():
-#            output = model(noise, time_step)["sample"]
+#            output = model(noise, time_step).sample
 #
 #        output_slice = output[0, -1, -3:, -3:].flatten()
 # fmt: off
@@ -126,25 +129,27 @@ class UNetLDMModelTests(ModelTesterMixin, unittest.TestCase):
         self.assertEqual(len(loading_info["missing_keys"]), 0)
 
         model.to(torch_device)
-        image = model(**self.dummy_input)["sample"]
+        image = model(**self.dummy_input).sample
 
         assert image is not None, "Make sure output is not None"
 
     def test_output_pretrained(self):
         model = UNet2DModel.from_pretrained("fusing/unet-ldm-dummy-update")
         model.eval()
+        model.to(torch_device)
 
         torch.manual_seed(0)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(0)
 
         noise = torch.randn(1, model.config.in_channels, model.config.sample_size, model.config.sample_size)
-        time_step = torch.tensor([10] * noise.shape[0])
+        noise = noise.to(torch_device)
+        time_step = torch.tensor([10] * noise.shape[0]).to(torch_device)
 
         with torch.no_grad():
-            output = model(noise, time_step)["sample"]
+            output = model(noise, time_step).sample
 
-        output_slice = output[0, -1, -3:, -3:].flatten()
+        output_slice = output[0, -1, -3:, -3:].flatten().cpu()
         # fmt: off
         expected_output_slice = torch.tensor([-13.3258, -20.1100, -15.9873, -17.6617, -23.0596, -17.9419, -13.3675, -16.1889, -12.3800])
         # fmt: on
@@ -253,7 +258,7 @@ class NCSNppModelTests(ModelTesterMixin, unittest.TestCase):
         time_step = torch.tensor(batch_size * [1e-4]).to(torch_device)
 
         with torch.no_grad():
-            output = model(noise, time_step)["sample"]
+            output = model(noise, time_step).sample
 
         output_slice = output[0, -3:, -3:, -1].flatten().cpu()
         # fmt: off
@@ -278,7 +283,7 @@ class NCSNppModelTests(ModelTesterMixin, unittest.TestCase):
         time_step = torch.tensor(batch_size * [1e-4]).to(torch_device)
 
         with torch.no_grad():
-            output = model(noise, time_step)["sample"]
+            output = model(noise, time_step).sample
 
         output_slice = output[0, -3:, -3:, -1].flatten().cpu()
         # fmt: off

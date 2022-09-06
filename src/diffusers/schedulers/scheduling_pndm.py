@@ -15,13 +15,13 @@
 # DISCLAIMER: This file is strongly influenced by https://github.com/ermongroup/ddim
 
 import math
-from typing import Union
+from typing import Tuple, Union
 
 import numpy as np
 import torch
 
 from ..configuration_utils import ConfigMixin, register_to_config
-from .scheduling_utils import SchedulerMixin
+from .scheduling_utils import SchedulerMixin, SchedulerOutput
 
 
 def betas_for_alpha_bar(num_diffusion_timesteps, max_beta=0.999):
@@ -51,12 +51,12 @@ class PNDMScheduler(SchedulerMixin, ConfigMixin):
     @register_to_config
     def __init__(
         self,
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-        tensor_format="pt",
-        skip_prk_steps=False,
+        num_train_timesteps: int = 1000,
+        beta_start: float = 0.0001,
+        beta_end: float = 0.02,
+        beta_schedule: str = "linear",
+        tensor_format: str = "pt",
+        skip_prk_steps: bool = False,
     ):
 
         if beta_schedule == "linear":
@@ -97,28 +97,32 @@ class PNDMScheduler(SchedulerMixin, ConfigMixin):
         self.tensor_format = tensor_format
         self.set_format(tensor_format=tensor_format)
 
-    def set_timesteps(self, num_inference_steps, offset=0):
+    def set_timesteps(self, num_inference_steps: int, offset: int = 0) -> torch.FloatTensor:
         self.num_inference_steps = num_inference_steps
         self._timesteps = list(
             range(0, self.config.num_train_timesteps, self.config.num_train_timesteps // num_inference_steps)
         )
         self._offset = offset
-        self._timesteps = [t + self._offset for t in self._timesteps]
+        self._timesteps = np.array([t + self._offset for t in self._timesteps])
 
         if self.config.skip_prk_steps:
             # for some models like stable diffusion the prk steps can/should be skipped to
             # produce better results. When using PNDM with `self.config.skip_prk_steps` the implementation
             # is based on crowsonkb's PLMS sampler implementation: https://github.com/CompVis/latent-diffusion/pull/51
-            self.prk_timesteps = []
-            self.plms_timesteps = list(reversed(self._timesteps[:-1] + self._timesteps[-2:-1] + self._timesteps[-1:]))
+            self.prk_timesteps = np.array([])
+            self.plms_timesteps = np.concatenate([self._timesteps[:-1], self._timesteps[-2:-1], self._timesteps[-1:]])[
+                ::-1
+            ].copy()
         else:
             prk_timesteps = np.array(self._timesteps[-self.pndm_order :]).repeat(2) + np.tile(
                 np.array([0, self.config.num_train_timesteps // num_inference_steps // 2]), self.pndm_order
             )
-            self.prk_timesteps = list(reversed(prk_timesteps[:-1].repeat(2)[1:-1]))
-            self.plms_timesteps = list(reversed(self._timesteps[:-3]))
+            self.prk_timesteps = (prk_timesteps[:-1].repeat(2)[1:-1])[::-1].copy()
+            self.plms_timesteps = self._timesteps[:-3][
+                ::-1
+            ].copy()  # we copy to avoid having negative strides which are not supported by torch.from_numpy
 
-        self.timesteps = self.prk_timesteps + self.plms_timesteps
+        self.timesteps = np.concatenate([self.prk_timesteps, self.plms_timesteps]).astype(np.int64)
 
         self.ets = []
         self.counter = 0
@@ -129,22 +133,30 @@ class PNDMScheduler(SchedulerMixin, ConfigMixin):
         model_output: Union[torch.FloatTensor, np.ndarray],
         timestep: int,
         sample: Union[torch.FloatTensor, np.ndarray],
-    ):
+        return_dict: bool = True,
+    ) -> Union[SchedulerOutput, Tuple]:
+
         if self.counter < len(self.prk_timesteps) and not self.config.skip_prk_steps:
-            return self.step_prk(model_output=model_output, timestep=timestep, sample=sample)
+            return self.step_prk(model_output=model_output, timestep=timestep, sample=sample, return_dict=return_dict)
         else:
-            return self.step_plms(model_output=model_output, timestep=timestep, sample=sample)
+            return self.step_plms(model_output=model_output, timestep=timestep, sample=sample, return_dict=return_dict)
 
     def step_prk(
         self,
         model_output: Union[torch.FloatTensor, np.ndarray],
         timestep: int,
         sample: Union[torch.FloatTensor, np.ndarray],
-    ):
+        return_dict: bool = True,
+    ) -> Union[SchedulerOutput, Tuple]:
         """
         Step function propagating the sample with the Runge-Kutta method. RK takes 4 forward passes to approximate the
         solution to the differential equation.
         """
+        if self.num_inference_steps is None:
+            raise ValueError(
+                "Number of inference steps is 'None', you need to run 'set_timesteps' after creating the scheduler"
+            )
+
         diff_to_prev = 0 if self.counter % 2 else self.config.num_train_timesteps // self.num_inference_steps // 2
         prev_timestep = max(timestep - diff_to_prev, self.prk_timesteps[-1])
         timestep = self.prk_timesteps[self.counter // 4 * 4]
@@ -167,18 +179,27 @@ class PNDMScheduler(SchedulerMixin, ConfigMixin):
         prev_sample = self._get_prev_sample(cur_sample, timestep, prev_timestep, model_output)
         self.counter += 1
 
-        return {"prev_sample": prev_sample}
+        if not return_dict:
+            return (prev_sample,)
+
+        return SchedulerOutput(prev_sample=prev_sample)
 
     def step_plms(
         self,
         model_output: Union[torch.FloatTensor, np.ndarray],
         timestep: int,
         sample: Union[torch.FloatTensor, np.ndarray],
-    ):
+        return_dict: bool = True,
+    ) -> Union[SchedulerOutput, Tuple]:
         """
         Step function propagating the sample with the linear multi-step method. This has one forward pass with multiple
         times to approximate the solution.
         """
+        if self.num_inference_steps is None:
+            raise ValueError(
+                "Number of inference steps is 'None', you need to run 'set_timesteps' after creating the scheduler"
+            )
+
         if not self.config.skip_prk_steps and len(self.ets) < 3:
             raise ValueError(
                 f"{self.__class__} can only be run AFTER scheduler has been run "
@@ -212,7 +233,10 @@ class PNDMScheduler(SchedulerMixin, ConfigMixin):
         prev_sample = self._get_prev_sample(sample, timestep, prev_timestep, model_output)
         self.counter += 1
 
-        return {"prev_sample": prev_sample}
+        if not return_dict:
+            return (prev_sample,)
+
+        return SchedulerOutput(prev_sample=prev_sample)
 
     def _get_prev_sample(self, sample, timestep, timestep_prev, model_output):
         # See formula (9) of PNDM paper https://arxiv.org/pdf/2202.09778.pdf
@@ -250,7 +274,13 @@ class PNDMScheduler(SchedulerMixin, ConfigMixin):
 
         return prev_sample
 
-    def add_noise(self, original_samples, noise, timesteps):
+    def add_noise(
+        self,
+        original_samples: Union[torch.FloatTensor, np.ndarray],
+        noise: Union[torch.FloatTensor, np.ndarray],
+        timesteps: Union[torch.IntTensor, np.ndarray],
+    ) -> torch.Tensor:
+
         sqrt_alpha_prod = self.alphas_cumprod[timesteps] ** 0.5
         sqrt_alpha_prod = self.match_shape(sqrt_alpha_prod, original_samples)
         sqrt_one_minus_alpha_prod = (1 - self.alphas_cumprod[timesteps]) ** 0.5

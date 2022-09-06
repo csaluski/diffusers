@@ -14,14 +14,33 @@
 
 # DISCLAIMER: This file is strongly influenced by https://github.com/yang-song/score_sde_pytorch
 
-# TODO(Patrick, Anton, Suraj) - make scheduler framework indepedent and clean-up a bit
-from typing import Union
+import warnings
+from dataclasses import dataclass
+from typing import Optional, Tuple, Union
 
 import numpy as np
 import torch
 
 from ..configuration_utils import ConfigMixin, register_to_config
-from .scheduling_utils import SchedulerMixin
+from ..utils import BaseOutput
+from .scheduling_utils import SchedulerMixin, SchedulerOutput
+
+
+@dataclass
+class SdeVeOutput(BaseOutput):
+    """
+    Output class for the ScoreSdeVeScheduler's step function output.
+
+    Args:
+        prev_sample (`torch.FloatTensor` of shape `(batch_size, num_channels, height, width)` for images):
+            Computed sample (x_{t-1}) of previous timestep. `prev_sample` should be used as next model input in the
+            denoising loop.
+        prev_sample_mean (`torch.FloatTensor` of shape `(batch_size, num_channels, height, width)` for images):
+            Mean averaged `prev_sample`. Same as `prev_sample`, only mean-averaged over previous timesteps.
+    """
+
+    prev_sample: torch.FloatTensor
+    prev_sample_mean: torch.FloatTensor
 
 
 class ScoreSdeVeScheduler(SchedulerMixin, ConfigMixin):
@@ -98,6 +117,11 @@ class ScoreSdeVeScheduler(SchedulerMixin, ConfigMixin):
         raise ValueError(f"`self.tensor_format`: {self.tensor_format} is not valid.")
 
     def set_seed(self, seed):
+        warnings.warn(
+            "The method `set_seed` is deprecated and will be removed in version `0.4.0`. Please consider passing a"
+            " generator instead.",
+            DeprecationWarning,
+        )
         tensor_format = getattr(self, "tensor_format", "pt")
         if tensor_format == "np":
             np.random.seed(seed)
@@ -111,14 +135,20 @@ class ScoreSdeVeScheduler(SchedulerMixin, ConfigMixin):
         model_output: Union[torch.FloatTensor, np.ndarray],
         timestep: int,
         sample: Union[torch.FloatTensor, np.ndarray],
-        seed=None,
-    ):
+        generator: Optional[torch.Generator] = None,
+        return_dict: bool = True,
+        **kwargs,
+    ) -> Union[SdeVeOutput, Tuple]:
         """
         Predict the sample at the previous timestep by reversing the SDE.
         """
-        if seed is not None:
-            self.set_seed(seed)
-        # TODO(Patrick) non-PyTorch
+        if "seed" in kwargs and kwargs["seed"] is not None:
+            self.set_seed(kwargs["seed"])
+
+        if self.timesteps is None:
+            raise ValueError(
+                "`self.timesteps` is not set, you need to run 'set_timesteps' after creating the scheduler"
+            )
 
         timestep = timestep * torch.ones(
             sample.shape[0], device=sample.device
@@ -135,29 +165,39 @@ class ScoreSdeVeScheduler(SchedulerMixin, ConfigMixin):
         drift = drift - diffusion[:, None, None, None] ** 2 * model_output
 
         #  equation 6: sample noise for the diffusion term of
-        noise = self.randn_like(sample)
+        noise = self.randn_like(sample, generator=generator)
         prev_sample_mean = sample - drift  # subtract because `dt` is a small negative timestep
         # TODO is the variable diffusion the correct scaling term for the noise?
         prev_sample = prev_sample_mean + diffusion[:, None, None, None] * noise  # add impact of diffusion field g
 
-        return {"prev_sample": prev_sample, "prev_sample_mean": prev_sample_mean}
+        if not return_dict:
+            return (prev_sample, prev_sample_mean)
+
+        return SdeVeOutput(prev_sample=prev_sample, prev_sample_mean=prev_sample_mean)
 
     def step_correct(
         self,
         model_output: Union[torch.FloatTensor, np.ndarray],
         sample: Union[torch.FloatTensor, np.ndarray],
-        seed=None,
-    ):
+        generator: Optional[torch.Generator] = None,
+        return_dict: bool = True,
+        **kwargs,
+    ) -> Union[SchedulerOutput, Tuple]:
         """
         Correct the predicted sample based on the output model_output of the network. This is often run repeatedly
         after making the prediction for the previous timestep.
         """
-        if seed is not None:
-            self.set_seed(seed)
+        if "seed" in kwargs and kwargs["seed"] is not None:
+            self.set_seed(kwargs["seed"])
+
+        if self.timesteps is None:
+            raise ValueError(
+                "`self.timesteps` is not set, you need to run 'set_timesteps' after creating the scheduler"
+            )
 
         # For small batch sizes, the paper "suggest replacing norm(z) with sqrt(d), where d is the dim. of z"
         # sample noise for correction
-        noise = self.randn_like(sample)
+        noise = self.randn_like(sample, generator=generator)
 
         # compute step size from the model_output, the noise, and the snr
         grad_norm = self.norm(model_output)
@@ -170,7 +210,10 @@ class ScoreSdeVeScheduler(SchedulerMixin, ConfigMixin):
         prev_sample_mean = sample + step_size[:, None, None, None] * model_output
         prev_sample = prev_sample_mean + ((step_size * 2) ** 0.5)[:, None, None, None] * noise
 
-        return {"prev_sample": prev_sample}
+        if not return_dict:
+            return (prev_sample,)
+
+        return SchedulerOutput(prev_sample=prev_sample)
 
     def __len__(self):
         return self.config.num_train_timesteps

@@ -17,15 +17,19 @@
 import importlib
 import inspect
 import os
-from typing import Optional, Union
+from dataclasses import dataclass
+from typing import List, Optional, Union
 
+import numpy as np
 import torch
 
+import PIL
 from huggingface_hub import snapshot_download
 from PIL import Image
+from tqdm.auto import tqdm
 
 from .configuration_utils import ConfigMixin
-from .utils import DIFFUSERS_CACHE, logging
+from .utils import DIFFUSERS_CACHE, BaseOutput, logging
 
 
 INDEX_FILE = "diffusion_pytorch_model.bin"
@@ -51,6 +55,20 @@ LOADABLE_CLASSES = {
 ALL_IMPORTABLE_CLASSES = {}
 for library in LOADABLE_CLASSES:
     ALL_IMPORTABLE_CLASSES.update(LOADABLE_CLASSES[library])
+
+
+@dataclass
+class ImagePipelineOutput(BaseOutput):
+    """
+    Output class for image pipelines.
+
+    Args:
+        images (`List[PIL.Image.Image]` or `np.ndarray`)
+            List of denoised PIL images of length `batch_size` or numpy array of shape `(batch_size, height, width,
+            num_channels)`. PIL images or numpy array present the denoised images of the diffusion pipeline.
+    """
+
+    images: Union[List[PIL.Image.Image], np.ndarray]
 
 
 class DiffusionPipeline(ConfigMixin):
@@ -266,3 +284,16 @@ class DiffusionPipeline(ConfigMixin):
         pil_images = [Image.fromarray(image) for image in images]
 
         return pil_images
+
+    def progress_bar(self, iterable):
+        if not hasattr(self, "_progress_bar_config"):
+            self._progress_bar_config = {}
+        elif not isinstance(self._progress_bar_config, dict):
+            raise ValueError(
+                f"`self._progress_bar_config` should be of type `dict`, but is {type(self._progress_bar_config)}."
+            )
+
+        return tqdm(iterable, **self._progress_bar_config)
+
+    def set_progress_bar_config(self, **kwargs):
+        self._progress_bar_config = kwargs
