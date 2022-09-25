@@ -7,6 +7,8 @@ from typing import List, Optional, Union
 import torch
 import numpy as np
 
+from tqdm.auto import tqdm
+
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 
 from ...models import AutoencoderKL, UNet2DConditionModel
