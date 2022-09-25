@@ -344,13 +344,26 @@ class StableDiffusionPipeline(DiffusionPipeline):
         if accepts_eta:
             extra_step_kwargs["eta"] = eta
         if save_n_steps:
-            diffuse_latents = []
+            mid_latents = []
+            mid_images = []
         else: 
-            diffuse_latents = None
+            mid_latents = None
+            mid_images = None
         for i, t in tqdm(enumerate(self.scheduler.timesteps)):
             if save_n_steps:
                 if i % save_n_steps == 0:
-                    diffuse_latents.append(latents)
+                    # scale and decode the image latents with vae
+                    dec_mid_latents = 1 / 0.18215 * latents
+                    mid_latents.append(dec_mid_latents)
+                    image = self.vae.decode(dec_mid_latents).sample
+
+                    image = (image / 2 + 0.5).clamp(0, 1)
+                    image = image.cpu().permute(0, 2, 3, 1).numpy()
+                    
+                    if output_type == "pil":
+                        image = self.numpy_to_pil(image)
+                    mid_latents.append(image)
+                    mid_images.append(image)
             # expand the latents if we are doing classifier free guidance
             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
             if isinstance(self.scheduler, LMSDiscreteScheduler):
@@ -381,7 +394,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
         if output_type == "pil":
             image = self.numpy_to_pil(image)
 
-        return {"image": image, "generator_state": generator_state, "latents": diffuse_latents}
+        return {"image": image, "generator_state": generator_state, "mid_latents": mid_latents, "mid_images": mid_images}
 
     def variation(self, text_embeddings, generator_state, variation_magnitude = 100, **kwargs):
         # random vector to move in latent space
