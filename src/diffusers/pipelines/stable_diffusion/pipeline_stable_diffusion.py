@@ -305,6 +305,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
         eta: Optional[float] = 0.0,
         generator: Optional[torch.Generator] = None,
         output_type: Optional[str] = "pil",
+        save_n_steps: Optional[int] = None,
         **kwargs,):
 
         batch_size = 1
@@ -342,8 +343,14 @@ class StableDiffusionPipeline(DiffusionPipeline):
         extra_step_kwargs = {}
         if accepts_eta:
             extra_step_kwargs["eta"] = eta
-
+        if save_n_steps:
+            diffuse_latents = []
+        else: 
+            diffuse_latents = None
         for i, t in tqdm(enumerate(self.scheduler.timesteps)):
+            if save_n_steps:
+                if i % save_n_steps == 0:
+                    diffuse_latents.append(latents)
             # expand the latents if we are doing classifier free guidance
             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
             if isinstance(self.scheduler, LMSDiscreteScheduler):
@@ -374,7 +381,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
         if output_type == "pil":
             image = self.numpy_to_pil(image)
 
-        return {"image": image, "generator_state": generator_state}
+        return {"image": image, "generator_state": generator_state, "latents": diffuse_latents}
 
     def variation(self, text_embeddings, generator_state, variation_magnitude = 100, **kwargs):
         # random vector to move in latent space
